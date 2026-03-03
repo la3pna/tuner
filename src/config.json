@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "service": { "listen_host": "0.0.0.0" },
+  "paths": { "cal_dir": "cal", "state_sets_dir": "states", "log_dir": "logs" },
+  "tuners": [
+    {
+      "name": "tuner1",
+      "enabled": true,
+      "service": { "port": 53190 },
+      "transport": "tcp",
+      "tcp": { "host": "192.168.1.50", "port": 12001, "timeout_s": 1.0 },
+      "serial": { "port": "COM6", "baud": 115200, "timeout_s": 1.0 },
+      "motion": { "wait_stop_timeout_s": 30.0, "poll_s": 0.05, "home_on_connect": false }
+    },
+    {
+      "name": "tuner2",
+      "enabled": false,
+      "service": { "port": 53191 },
+      "transport": "serial",
+      "tcp": { "host": "192.168.1.51", "port": 12001, "timeout_s": 1.0 },
+      "serial": { "port": "COM11", "baud": 115200, "timeout_s": 1.0 },
+      "motion": { "wait_stop_timeout_s": 30.0, "poll_s": 0.05, "home_on_connect": false }
+    }
+  ],
+  "vna": {
+    "type": "LibreVNA",
+    "enabled": true,
+    "scpi": { "host": "127.0.0.1", "port": 19542 },
+    "measure_one_point": {
+      "power_dbm": -10.0,
+      "ifbw_hz": 10000.0,
+      "avg": 1,
+      "span_hz": 400000.0,
+      "points": 2,
+      "sweep_timeout_s": 8.0
+    }
+  },
+  "lookup": { "z0_ohm": 50.0, "default_select": "topn_min_il", "top_n": 30, "alpha": 0.02 }
+}
