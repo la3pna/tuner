@@ -9,7 +9,7 @@
     {
       "name": "tuner1",
       "enabled": false,
-      "service": { "port": 53190 },
+      "service": { "port": 53190, "client_timeout_s": 300  },
       "transport": "tcp",
       "tcp": { "host": "192.168.1.50", "port": 12001, "timeout_s": 1.0 },
       "serial": { "port": "COM6", "baud": 115200, "timeout_s": 1.0 },
@@ -18,7 +18,7 @@
     {
       "name": "tuner2",
       "enabled": true,
-      "service": { "port": 53191 },
+      "service": { "port": 53191, "client_timeout_s": 300  },
       "transport": "serial",
       "tcp": { "host": "192.168.1.182", "port": 12001, "timeout_s": 1.0 },
       "serial": { "port": "COM5", "baud": 115200, "timeout_s": 1.0 },

@@ -13,35 +13,41 @@ except ImportError:
 
 @dataclass
 class TunerConfig:
-    mode: str                 # "tcp" or "serial"
-    host: str = "127.0.0.1"
+    mode: str                 # 'tcp' or 'serial'
+    host: str = '127.0.0.1'
     port: int = 12001
-    com: str = "COM6"
+    com: str = 'COM6'
     baud: int = 115200
 
-    # You confirmed LF works in your serial terminal.
-    eol: str = "\n"
+    # You verified LF works.
+    eol: str = '\n'
 
     # Per-read timeout (each readline call).
     io_timeout_s: float = 0.25
 
-    # How long to wait for "OK" for motion commands (home/goto).
-    motion_ok_timeout_s: float = 180.0  # long enough for full travel + homing
+    # Wait for OK for motion commands (home/goto).
+    motion_ok_timeout_s: float = 300.0
 
-    # How long to wait for replies for queries (POS?/STAT?/IDN).
+    # Wait for replies for queries (POS?/STAT?/IDN).
     query_timeout_s: float = 2.0
+
+    # Some units sometimes ignore the *first* move right after HOME.
+    # We mitigate by verifying POS after OK and retrying.
+    move_verify_retries: int = 2
+    retry_delay_s: float = 0.2
+    post_home_delay_s: float = 0.1
 
 
 class TunerBackend:
     """
-    Behavior (per your latest confirmation):
-      - For :MOT:HOME:* and :MOT:*:GOTO, firmware returns 'OK' ONLY when motion is finished.
-      - Therefore we must wait long enough for the OK line.
+    Observed behavior:
+      - HOME returns OK after motion complete.
+      - Immediately after HOME, a first GOTO may sometimes return OK but not actually move (POS stays 0).
+        Sending the same GOTO again then moves.
 
-    We implement:
-      - cmd_ok_motion(): wait up to motion_ok_timeout_s for OK
-      - query(): wait up to query_timeout_s for a non-empty line
-      - Verified GOTO: after OK, read POS? and retry once if mismatch
+    Fix:
+      - After any GOTO OK, read POS? and if mismatch, retry sending GOTO (default 2 attempts total).
+      - After HOME OK, wait a small settle delay.
     """
 
     def __init__(self, cfg: TunerConfig):
@@ -53,17 +59,16 @@ class TunerBackend:
 
     def connect(self):
         self.close()
-        if self.cfg.mode == "tcp":
+        if self.cfg.mode == 'tcp':
             self._sock = socket.create_connection((self.cfg.host, self.cfg.port), timeout=self.cfg.query_timeout_s)
             self._sock.settimeout(self.cfg.io_timeout_s)
-            self._fh = self._sock.makefile("rwb", buffering=0)
-        elif self.cfg.mode == "serial":
+            self._fh = self._sock.makefile('rwb', buffering=0)
+        elif self.cfg.mode == 'serial':
             if serial is None:
-                raise RuntimeError("pyserial not installed (pip install pyserial)")
+                raise RuntimeError('pyserial not installed (pip install pyserial)')
             self._ser = serial.Serial(self.cfg.com, baudrate=self.cfg.baud, timeout=self.cfg.io_timeout_s)
         else:
-            raise ValueError("mode must be tcp or serial")
-
+            raise ValueError('mode must be tcp or serial')
         self.flush_input()
 
     def close(self):
@@ -86,7 +91,6 @@ class TunerBackend:
             pass
         self._ser = None
 
-    # ---------- IO helpers ----------
     def flush_input(self):
         try:
             if self._ser:
@@ -95,30 +99,29 @@ class TunerBackend:
             pass
 
     def _write_line(self, line: str):
-        data = (line.strip() + self.cfg.eol).encode("ascii", errors="ignore")
+        data = (line.strip() + self.cfg.eol).encode('ascii', errors='ignore')
         if self._fh:
             self._fh.write(data)
         elif self._ser:
             self._ser.write(data)
         else:
-            raise RuntimeError("Transport not open")
+            raise RuntimeError('Transport not open')
 
     def _read_line_once(self) -> str:
         if self._fh:
-            return self._fh.readline().decode(errors="ignore").strip()
+            return self._fh.readline().decode(errors='ignore').strip()
         if self._ser:
-            return self._ser.readline().decode(errors="ignore").strip()
-        raise RuntimeError("Transport not open")
+            return self._ser.readline().decode(errors='ignore').strip()
+        raise RuntimeError('Transport not open')
 
     def _read_nonempty_until(self, timeout_s: float) -> str:
         deadline = time.time() + float(timeout_s)
         while time.time() < deadline:
             line = self._read_line_once()
-            if line != "":
+            if line != '':
                 return line
-        return ""
+        return ''
 
-    # ---------- commands ----------
     def query(self, cmd: str, timeout_s: Optional[float] = None) -> str:
         self.flush_input()
         self._write_line(cmd)
@@ -126,23 +129,20 @@ class TunerBackend:
         return self._read_nonempty_until(t)
 
     def cmd_ok_motion(self, cmd: str) -> None:
-        """
-        Send a motion command and wait long enough for OK (which is sent after motion completes).
-        """
+        """Send a motion command and wait for OK (sent after motion completes)."""
         self.flush_input()
         self._write_line(cmd)
         ans = self._read_nonempty_until(self.cfg.motion_ok_timeout_s)
-        if ans.upper() != "OK":
+        if ans.upper() != 'OK':
             raise RuntimeError(f"Expected OK, got '{ans}' for cmd '{cmd}'")
 
-    # ---------- parsing ----------
     @staticmethod
     def _parse_int(s: str) -> int:
-        s = (s or "").strip()
+        s = (s or '').strip()
         try:
             return int(s)
         except ValueError:
-            for tok in s.replace(";", ",").replace(" ", ",").split(","):
+            for tok in s.replace(';', ',').replace(' ', ',').split(','):
                 tok = tok.strip()
                 if not tok:
                     continue
@@ -152,42 +152,70 @@ class TunerBackend:
                     continue
         raise ValueError(f"Invalid integer response: '{s}'")
 
-    # ---------- SCPI-ish API ----------
+    @staticmethod
+    def _stat_flags(stat: str) -> set[str]:
+        parts = [p.strip().upper() for p in (stat or '').split(',') if p.strip()]
+        return set(parts)
+
     def idn(self) -> str:
-        return self.query("*IDN?")
+        return self.query('*IDN?')
 
-    def enable(self, enable: bool = True) -> None:
-        # Not in firmware command set; keep no-op for compatibility.
-        return
+    def stat_x(self) -> str:
+        return self.query(':MOT:X:STAT?')
 
-    def home_all(self) -> None: self.cmd_ok_motion(":MOT:HOME:ALL")
-    def home_x(self) -> None:   self.cmd_ok_motion(":MOT:HOME:X")
-    def home_y(self) -> None:   self.cmd_ok_motion(":MOT:HOME:Y")
+    def stat_y(self) -> str:
+        return self.query(':MOT:Y:STAT?')
+
+    def is_homed(self) -> bool:
+        sx = self.stat_x()
+        sy = self.stat_y()
+        return ('HOMED' in self._stat_flags(sx)) and ('HOMED' in self._stat_flags(sy))
+
+    def home_all(self) -> None:
+        self.cmd_ok_motion(':MOT:HOME:ALL')
+        if self.cfg.post_home_delay_s > 0:
+            time.sleep(self.cfg.post_home_delay_s)
+
+    def home_x(self) -> None:
+        self.cmd_ok_motion(':MOT:HOME:X')
+        if self.cfg.post_home_delay_s > 0:
+            time.sleep(self.cfg.post_home_delay_s)
+
+    def home_y(self) -> None:
+        self.cmd_ok_motion(':MOT:HOME:Y')
+        if self.cfg.post_home_delay_s > 0:
+            time.sleep(self.cfg.post_home_delay_s)
 
     def pos_x(self) -> int:
-        return self._parse_int(self.query(":MOT:X:POS?"))
+        return self._parse_int(self.query(':MOT:X:POS?'))
 
     def pos_y(self) -> int:
-        return self._parse_int(self.query(":MOT:Y:POS?"))
+        return self._parse_int(self.query(':MOT:Y:POS?'))
 
-    def goto_x(self, x_steps: int, retry_once: bool = True) -> int:
+    def goto_x(self, x_steps: int) -> int:
         target = int(x_steps)
-        self.cmd_ok_motion(f":MOT:X:GOTO {target}")
-        pos = self.pos_x()
-        if pos != target and retry_once:
-            self.cmd_ok_motion(f":MOT:X:GOTO {target}")
+        attempts = max(1, int(self.cfg.move_verify_retries))
+        last_pos = None
+        for k in range(attempts):
+            self.cmd_ok_motion(f':MOT:X:GOTO {target}')
             pos = self.pos_x()
-        if pos != target:
-            raise RuntimeError(f"X verify failed: target={target}, pos={pos}")
-        return pos
+            last_pos = pos
+            if pos == target:
+                return pos
+            if k < attempts - 1:
+                time.sleep(self.cfg.retry_delay_s)
+        raise RuntimeError(f'X verify failed: target={target}, pos={last_pos} (attempts={attempts})')
 
-    def goto_y(self, y_steps: int, retry_once: bool = True) -> int:
+    def goto_y(self, y_steps: int) -> int:
         target = int(y_steps)
-        self.cmd_ok_motion(f":MOT:Y:GOTO {target}")
-        pos = self.pos_y()
-        if pos != target and retry_once:
-            self.cmd_ok_motion(f":MOT:Y:GOTO {target}")
+        attempts = max(1, int(self.cfg.move_verify_retries))
+        last_pos = None
+        for k in range(attempts):
+            self.cmd_ok_motion(f':MOT:Y:GOTO {target}')
             pos = self.pos_y()
-        if pos != target:
-            raise RuntimeError(f"Y verify failed: target={target}, pos={pos}")
-        return pos
+            last_pos = pos
+            if pos == target:
+                return pos
+            if k < attempts - 1:
+                time.sleep(self.cfg.retry_delay_s)
+        raise RuntimeError(f'Y verify failed: target={target}, pos={last_pos} (attempts={attempts})')

@@ -34,10 +34,16 @@ class TunerService:
 
         tcfg = get_tuner_cfg(self.cfg, tuner_name)
         transport = (tcfg.get("transport") or "tcp").lower()
+        motion = (tcfg.get("motion", {}) or {})
 
         def _decode_eol(v: str, default: str) -> str:
             s = str(v) if v is not None else default
             return s.encode("utf-8").decode("unicode_escape")
+
+        motion_ok_timeout_s = float(motion.get("motion_ok_timeout_s", 300.0))
+        move_verify_retries = int(motion.get("move_verify_retries", 2))
+        retry_delay_s = float(motion.get("retry_delay_s", 0.2))
+        post_home_delay_s = float(motion.get("post_home_delay_s", 0.1))
 
         if transport == "tcp":
             tcp = tcfg.get("tcp", {}) or {}
@@ -46,10 +52,13 @@ class TunerService:
                 host=tcp.get("host", "127.0.0.1"),
                 port=int(tcp.get("port", 12001)),
                 baud=0,
-                eol=_decode_eol(tcp.get("eol", "\\n"), "\\n"),
+                eol=_decode_eol(tcp.get("eol", "\n"), "\n"),
                 io_timeout_s=float(tcp.get("io_timeout_s", 0.25)),
                 query_timeout_s=float(tcp.get("query_timeout_s", 2.0)),
-                motion_ok_timeout_s=float(tcp.get("motion_ok_timeout_s", 180.0)),
+                motion_ok_timeout_s=motion_ok_timeout_s,
+                move_verify_retries=move_verify_retries,
+                retry_delay_s=retry_delay_s,
+                post_home_delay_s=post_home_delay_s,
             ))
         elif transport == "serial":
             ser = tcfg.get("serial", {}) or {}
@@ -57,15 +66,17 @@ class TunerService:
                 mode="serial",
                 com=ser.get("port", "COM6"),
                 baud=int(ser.get("baud", 115200)),
-                eol=_decode_eol(ser.get("eol", "\\n"), "\\n"),
+                eol=_decode_eol(ser.get("eol", "\n"), "\n"),
                 io_timeout_s=float(ser.get("io_timeout_s", 0.25)),
                 query_timeout_s=float(ser.get("query_timeout_s", 2.0)),
-                motion_ok_timeout_s=float(ser.get("motion_ok_timeout_s", 180.0)),
+                motion_ok_timeout_s=motion_ok_timeout_s,
+                move_verify_retries=move_verify_retries,
+                retry_delay_s=retry_delay_s,
+                post_home_delay_s=post_home_delay_s,
             ))
         else:
             raise ValueError(f"Unsupported tuner transport: {transport}")
 
-        # VNA backend config
         vcfg = get_vna_cfg(self.cfg)
         scpi = vcfg.get("scpi", {}) or {}
         m = vcfg.get("measure_one_point", {}) or {}
@@ -87,6 +98,13 @@ class TunerService:
         self.default_alpha = float(lk.get("alpha", 0.02))
 
         self.lock = asyncio.Lock()
+
+    def _ensure_homed(self):
+        try:
+            if not self.tuner.is_homed():
+                self.tuner.home_all()
+        except Exception:
+            pass
 
     async def handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
         cmd = (req.get("cmd") or "").lower().strip()
@@ -114,8 +132,11 @@ class TunerService:
                 if cmd == "setxy":
                     x = int(req["x_steps"])
                     y = int(req["y_steps"])
-                    xf = self.tuner.goto_x(x, retry_once=True)
-                    yf = self.tuner.goto_y(y, retry_once=True)
+
+                    self._ensure_homed()
+
+                    xf = self.tuner.goto_x(x)
+                    yf = self.tuner.goto_y(y)
                     return {"ok": True, "x": xf, "y": yf}
 
                 if cmd == "measure":
@@ -151,8 +172,9 @@ class TunerService:
                     cal_file, rows = self.store.load_freq(f_hz)
                     pick = pick_state(rows, gamma_target, select=select, top_n=top_n, alpha=alpha)
 
-                    xf = self.tuner.goto_x(pick.x, retry_once=True)
-                    yf = self.tuner.goto_y(pick.y, retry_once=True)
+                    self._ensure_homed()
+                    xf = self.tuner.goto_x(pick.x)
+                    yf = self.tuner.goto_y(pick.y)
 
                     return {
                         "ok": True,
@@ -187,9 +209,10 @@ class TunerService:
                         self.tuner.home_all()
 
                     out_rows: List[CalRow] = []
+                    self._ensure_homed()
                     for (x, y) in states:
-                        self.tuner.goto_x(x, retry_once=True)
-                        self.tuner.goto_y(y, retry_once=True)
+                        self.tuner.goto_x(x)
+                        self.tuner.goto_y(y)
 
                         picked_f, s11, s21, s12, s22 = self.vna.measure_s2p(f_hz)
                         out_rows.append(CalRow(x=x, y=y, s11=s11, s21=s21, s12=s12, s22=s22))
