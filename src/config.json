@@ -1,11 +1,14 @@
 {
   "version": 1,
-  "service": { "listen_host": "0.0.0.0" },
+  "service": {
+    "bind_host": "0.0.0.0",
+    "client_host": "127.0.0.1"
+    },
   "paths": { "cal_dir": "cal", "state_sets_dir": "states", "log_dir": "logs" },
   "tuners": [
     {
       "name": "tuner1",
-      "enabled": true,
+      "enabled": false,
       "service": { "port": 53190 },
       "transport": "tcp",
       "tcp": { "host": "192.168.1.50", "port": 12001, "timeout_s": 1.0 },
@@ -14,12 +17,12 @@
     },
     {
       "name": "tuner2",
-      "enabled": false,
+      "enabled": true,
       "service": { "port": 53191 },
       "transport": "serial",
-      "tcp": { "host": "192.168.1.51", "port": 12001, "timeout_s": 1.0 },
-      "serial": { "port": "COM11", "baud": 115200, "timeout_s": 1.0 },
-      "motion": { "wait_stop_timeout_s": 30.0, "poll_s": 0.05, "home_on_connect": false }
+      "tcp": { "host": "192.168.1.182", "port": 12001, "timeout_s": 1.0 },
+      "serial": { "port": "COM5", "baud": 115200, "timeout_s": 1.0 },
+      "motion": { "wait_stop_timeout_s": 30.0, "poll_s": 0.5, "home_on_connect": false }
     }
   ],
   "vna": {

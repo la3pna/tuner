@@ -1,51 +1,81 @@
+# vna_backend.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Tuple
-from libreVNA import libreVNA
 
-from measure_one_point_via_scpi_trace_v4 import (
-    _scpi_cmd, _scpi_query, _require_calibration_active, _wait_sweep_done, _get_point_near
-)
+from vna_scpi import ScpiClient, ScpiConfig, wait_opc
+
 
 @dataclass
 class VnaConfig:
     host: str = "127.0.0.1"
     port: int = 19542
+    timeout_s: float = 2.0
+
     power_dbm: float = -10.0
-    ifbw_hz: float = 10_000.0
+    ifbw_hz: float = 10000.0
     avg: int = 1
-    span_hz: float = 400_000.0
+
+    single_point: bool = True
+    span_hz: float = 200000.0
     points: int = 2
+
     sweep_timeout_s: float = 8.0
+
 
 class VnaBackend:
     def __init__(self, cfg: VnaConfig):
         self.cfg = cfg
-        self.vna = libreVNA(cfg.host, cfg.port, check_cmds=False, timeout=1)
+        self.scpi = ScpiClient(ScpiConfig(cfg.host, cfg.port, cfg.timeout_s))
 
     def idn(self) -> str:
-        return _scpi_query(self.vna, "*IDN?", timeout=1.0) or ""
+        try:
+            return self.scpi.idn()
+        except Exception:
+            return ""
 
-    def measure_s2p_near(self, freq_hz: float) -> Tuple[float, complex, complex, complex, complex]:
-        target = float(freq_hz)
-        span = max(0.0, float(self.cfg.span_hz))
-        start_hz = max(0.0, target - span / 2.0)
-        stop_hz = target + span / 2.0
+    def close(self):
+        self.scpi.close()
 
-        _scpi_cmd(self.vna, ":DEV:MODE VNA")
-        _scpi_cmd(self.vna, ":VNA:SWEEP FREQUENCY")
-        _scpi_cmd(self.vna, f":VNA:STIM:LVL {self.cfg.power_dbm}")
-        _scpi_cmd(self.vna, f":VNA:ACQ:IFBW {self.cfg.ifbw_hz}")
-        _scpi_cmd(self.vna, f":VNA:ACQ:AVG {int(self.cfg.avg)}")
-        _scpi_cmd(self.vna, f":VNA:ACQ:POINTS {int(self.cfg.points)}")
-        _scpi_cmd(self.vna, f":VNA:FREQuency:START {start_hz}")
-        _scpi_cmd(self.vna, f":VNA:FREQuency:STOP {stop_hz}")
+    def _setup_sweep(self, f_hz: float):
+        c = self.scpi
+        c.write(":DEV:MODE VNA")
+        c.write(":VNA:SWEEP FREQUENCY")
+        c.write(f":VNA:STIM:LVL {self.cfg.power_dbm}")
+        c.write(f":VNA:ACQ:IFBW {self.cfg.ifbw_hz}")
+        c.write(f":VNA:ACQ:AVG {int(self.cfg.avg)}")
 
-        _require_calibration_active(self.vna)
-        _wait_sweep_done(self.vna, timeout_s=float(self.cfg.sweep_timeout_s))
+        if self.cfg.single_point:
+            c.write(":VNA:ACQ:POINTS 1")
+            c.write(f":VNA:FREQuency:START {float(f_hz)}")
+            c.write(f":VNA:FREQuency:STOP {float(f_hz)}")
+        else:
+            span = float(self.cfg.span_hz)
+            start = max(0.0, float(f_hz) - span / 2.0)
+            stop = float(f_hz) + span / 2.0
+            pts = max(2, int(self.cfg.points))
+            c.write(f":VNA:ACQ:POINTS {pts}")
+            c.write(f":VNA:FREQuency:START {start}")
+            c.write(f":VNA:FREQuency:STOP {stop}")
 
-        f11, s11, _ = _get_point_near(self.vna, "S11", target, start_hz, stop_hz)
-        f21, s21, _ = _get_point_near(self.vna, "S21", target, start_hz, stop_hz)
-        f12, s12, _ = _get_point_near(self.vna, "S12", target, start_hz, stop_hz)
-        f22, s22, _ = _get_point_near(self.vna, "S22", target, start_hz, stop_hz)
-        return float(f11), complex(s11), complex(s21), complex(s12), complex(s22)
+    def _trigger_and_wait(self):
+        wait_opc(self.scpi, timeout_s=float(self.cfg.sweep_timeout_s))
+
+    def _read_trace(self, name: str) -> complex:
+        resp = self.scpi.query(f":VNA:TRACE:DATA? {name}")
+        pts = ScpiClient.parse_complex_pairs(resp)
+        if not pts:
+            raise RuntimeError(f"No trace data returned for {name}: '{resp[:120]}'")
+        return pts[0]
+
+    def measure_s2p(self, f_hz: float) -> Tuple[float, complex, complex, complex, complex]:
+        self._setup_sweep(float(f_hz))
+        self._trigger_and_wait()
+
+        s11 = self._read_trace("S11")
+        s21 = self._read_trace("S21")
+        s12 = self._read_trace("S12")
+        s22 = self._read_trace("S22")
+
+        return float(f_hz), s11, s21, s12, s22

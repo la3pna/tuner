@@ -102,7 +102,7 @@ class TunerService:
 
             if cmd == "measure":
                 f_hz = float(req["f_hz"])
-                picked_f, s11, s21, s12, s22 = self.vna.measure_s2p_near(f_hz)
+                picked_f, s11, s21, s12, s22 = self.vna.measure_s2p(f_hz)
                 return {"ok": True, "f_hz": picked_f,
                         "s11": cplx_to_list(s11), "s21": cplx_to_list(s21),
                         "s12": cplx_to_list(s12), "s22": cplx_to_list(s22),
@@ -182,7 +182,7 @@ class TunerService:
                 for x, y in states:
                     self.tuner.goto_x(x); self.tuner.goto_y(y)
                     self.tuner.wait_stop("both", timeout_s=self.wait_stop_timeout_s, poll_s=self.poll_s)
-                    picked_f, s11, s21, s12, s22 = self.vna.measure_s2p_near(f_hz)
+                    picked_f, s11, s21, s12, s22 = self.vna.measure_s2p(f_hz)
                     out_rows.append(CalRow(x=x, y=y, s11=s11, s21=s21, s12=s12, s22=s22))
 
                 path = self.store.save_freq(f_hz, out_rows)
@@ -217,7 +217,11 @@ async def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    host, port = get_tuner_service_endpoint(cfg, args.tuner)
+    svc_global = (cfg.get("service", {}) or {})
+    host = svc_global.get("bind_host", "0.0.0.0")
+    _, port = get_tuner_service_endpoint(cfg, args.tuner)  # samme port som før
+
+    # overrides
     if args.listen_host: host = args.listen_host
     if args.listen_port: port = args.listen_port
 

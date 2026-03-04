@@ -31,10 +31,14 @@ def get_vna_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
 def get_lookup_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return cfg.get("lookup", {})
 
-def get_tuner_service_endpoint(cfg: Dict[str, Any], tuner_name: str) -> Tuple[str, int]:
+def get_tuner_service_endpoint(cfg, tuner_name):
     t = get_tuner_cfg(cfg, tuner_name)
-    base_host = (cfg.get("service", {}) or {}).get("listen_host", "127.0.0.1")
+
+    svc_global = (cfg.get("service", {}) or {})
+    # client_host is for connecting, bind_host is for listening
+    client_host = svc_global.get("client_host", "127.0.0.1")
+
     svc = t.get("service", {}) or {}
-    host = svc.get("host", base_host)
+    host = svc.get("host", client_host)  # per-tuner override if present
     port = int(svc.get("port", 53190))
     return host, port
