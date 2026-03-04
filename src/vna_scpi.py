@@ -15,6 +15,8 @@ class ScpiConfig:
 
 
 class ScpiClient:
+    """Minimal SCPI-over-TCP client (LF terminated)."""
+
     def __init__(self, cfg: ScpiConfig):
         self.cfg = cfg
         self.sock = socket.create_connection((cfg.host, cfg.port), timeout=cfg.timeout_s)
@@ -28,8 +30,7 @@ class ScpiClient:
             pass
 
     def write(self, cmd: str) -> None:
-        data = (cmd.strip() + "\n").encode("utf-8", errors="ignore")
-        self.sock.sendall(data)
+        self.sock.sendall((cmd.strip() + "\n").encode("utf-8", errors="ignore"))
 
     def _readline(self) -> str:
         while b"\n" not in self._rx:
@@ -63,9 +64,9 @@ class ScpiClient:
         return out
 
     @staticmethod
-    def parse_complex_pairs(s: str):
+    def parse_complex_pairs(s: str) -> List[complex]:
         vals = ScpiClient.parse_float_list(s)
-        out = []
+        out: List[complex] = []
         for i in range(0, len(vals) - 1, 2):
             out.append(complex(vals[i], vals[i + 1]))
         return out

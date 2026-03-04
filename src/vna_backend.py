@@ -14,20 +14,25 @@ class VnaConfig:
     timeout_s: float = 2.0
 
     power_dbm: float = -10.0
-    ifbw_hz: float = 10000.0
+    ifbw_hz: float = 10_000.0
     avg: int = 1
 
-    single_point: bool = True
-    span_hz: float = 200000.0
+    single_point: bool = False
+    span_hz: float = 400_000.0
     points: int = 2
 
     sweep_timeout_s: float = 8.0
 
 
 class VnaBackend:
+    """LibreVNA SCPI backend without external dependencies."""
+
     def __init__(self, cfg: VnaConfig):
         self.cfg = cfg
         self.scpi = ScpiClient(ScpiConfig(cfg.host, cfg.port, cfg.timeout_s))
+
+    def close(self):
+        self.scpi.close()
 
     def idn(self) -> str:
         try:
@@ -35,10 +40,7 @@ class VnaBackend:
         except Exception:
             return ""
 
-    def close(self):
-        self.scpi.close()
-
-    def _setup_sweep(self, f_hz: float):
+    def _setup(self, f_hz: float):
         c = self.scpi
         c.write(":DEV:MODE VNA")
         c.write(":VNA:SWEEP FREQUENCY")
@@ -59,23 +61,19 @@ class VnaBackend:
             c.write(f":VNA:FREQuency:START {start}")
             c.write(f":VNA:FREQuency:STOP {stop}")
 
-    def _trigger_and_wait(self):
-        wait_opc(self.scpi, timeout_s=float(self.cfg.sweep_timeout_s))
-
-    def _read_trace(self, name: str) -> complex:
+    def _read_trace_first(self, name: str) -> complex:
         resp = self.scpi.query(f":VNA:TRACE:DATA? {name}")
         pts = ScpiClient.parse_complex_pairs(resp)
         if not pts:
-            raise RuntimeError(f"No trace data returned for {name}: '{resp[:120]}'")
+            raise RuntimeError(f"No data for {name}. Response: {resp[:120]}")
         return pts[0]
 
     def measure_s2p(self, f_hz: float) -> Tuple[float, complex, complex, complex, complex]:
-        self._setup_sweep(float(f_hz))
-        self._trigger_and_wait()
+        self._setup(float(f_hz))
+        wait_opc(self.scpi, timeout_s=float(self.cfg.sweep_timeout_s))
 
-        s11 = self._read_trace("S11")
-        s21 = self._read_trace("S21")
-        s12 = self._read_trace("S12")
-        s22 = self._read_trace("S22")
-
+        s11 = self._read_trace_first("S11")
+        s21 = self._read_trace_first("S21")
+        s12 = self._read_trace_first("S12")
+        s22 = self._read_trace_first("S22")
         return float(f_hz), s11, s21, s12, s22
