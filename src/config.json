@@ -2,7 +2,8 @@
   "version": 1,
   "service": {
     "bind_host": "0.0.0.0",
-    "client_host": "127.0.0.1"
+    "client_host": "127.0.0.1",
+    "client_timeout_s": 1800
     },
   "paths": { "cal_dir": "cal", "state_sets_dir": "states", "log_dir": "logs" },
   "tuners": [
@@ -14,11 +15,11 @@
       "tcp": { "host": "192.168.1.50", "port": 12001, "timeout_s": 1.0 },
       "serial": { "port": "COM6", "baud": 115200, "timeout_s": 1.0 },
       "motion": {
-        "wait_stop_timeout_s": 30.0,
+        "wait_stop_timeout_s": 60.0,
         "poll_s": 0.5,
         "home_on_connect": false,
 
-        "motion_ok_timeout_s": 300.0,
+        "motion_ok_timeout_s": 600.0,
         "move_verify_retries": 2,
         "retry_delay_s": 0.2,
         "post_home_delay_s": 0.1
@@ -32,11 +33,11 @@
       "tcp": { "host": "192.168.1.182", "port": 12001, "timeout_s": 1.0 },
       "serial": { "port": "COM5", "baud": 115200, "timeout_s": 1.0 },
       "motion": {
-        "wait_stop_timeout_s": 30.0,
+        "wait_stop_timeout_s": 60.0,
         "poll_s": 0.5,
         "home_on_connect": false,
 
-        "motion_ok_timeout_s": 300.0,
+        "motion_ok_timeout_s": 600.0,
         "move_verify_retries": 2,
         "retry_delay_s": 0.2,
         "post_home_delay_s": 0.1
@@ -51,8 +52,8 @@
       "power_dbm": -10.0,
       "ifbw_hz": 10000.0,
       "avg": 1,
-      "span_hz": 0.0,
-      "points": 1,
+      "span_hz": 200000.0,
+      "points": 3,
       "sweep_timeout_s": 8.0
     }
   },

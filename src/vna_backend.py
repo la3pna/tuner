@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -23,9 +22,8 @@ class VnaConfig:
     ifbw_hz: float = 10000.0
     avg: int = 1
 
-    single_point: bool = False
-    span_hz: float = 400000.0
-    points: int = 2
+    span_hz: float = 200000.0
+    points: int = 3
 
     sweep_timeout_s: float = 8.0
 
@@ -72,7 +70,7 @@ class _TraceStream:
                 continue
         return None
 
-    def drain(self, seconds: float = 0.2):
+    def drain(self, seconds: float = 0.3):
         end = time.time() + seconds
         while time.time() < end:
             try:
@@ -89,7 +87,7 @@ class _TraceStream:
 
 
 class VnaBackend:
-    """LibreVNA backend using SCPI + JSON trace stream."""
+    """LibreVNA backend using SCPI + JSON stream."""
 
     def __init__(self, cfg: VnaConfig):
         self.cfg = cfg
@@ -112,47 +110,51 @@ class VnaBackend:
         c.write(f":VNA:ACQ:IFBW {self.cfg.ifbw_hz}")
         c.write(f":VNA:ACQ:AVG {self.cfg.avg}")
 
-        if self.cfg.single_point:
-            c.write(":VNA:ACQ:POINTS 1")
-            c.write(f":VNA:FREQ:START {f_hz}")
-            c.write(f":VNA:FREQ:STOP {f_hz}")
-        else:
-            span = self.cfg.span_hz
-            start = f_hz - span / 2
-            stop = f_hz + span / 2
-            c.write(f":VNA:ACQ:POINTS {self.cfg.points}")
-            c.write(f":VNA:FREQ:START {start}")
-            c.write(f":VNA:FREQ:STOP {stop}")
+        span = float(self.cfg.span_hz)
+        pts = int(self.cfg.points)
+
+        start = f_hz - span / 2
+        stop = f_hz + span / 2
+
+        c.write(f":VNA:ACQ:POINTS {pts}")
+        c.write(f":VNA:FREQ:START {start}")
+        c.write(f":VNA:FREQ:STOP {stop}")
+
+        return start, stop, pts
 
     @staticmethod
     def _extract_complex(j: dict, key: str) -> complex:
-        m = j["measurements"]
-        return complex(m[f"{key}_real"], m[f"{key}_imag"])
+        m = j.get("measurements") or {}
+        return complex(float(m[f"{key}_real"]), float(m[f"{key}_imag"]))
 
     def measure_s2p(self, f_hz: float) -> Tuple[float, complex, complex, complex, complex]:
-        self._setup(f_hz)
+        f_hz = float(f_hz)
+        start, stop, pts = self._setup(f_hz)
 
-        wait_opc(self.scpi, timeout_s=self.cfg.sweep_timeout_s)
-
-        pts = 1 if self.cfg.single_point else max(2, self.cfg.points)
+        wait_opc(self.scpi, timeout_s=float(self.cfg.sweep_timeout_s))
 
         ts = _TraceStream(self.cfg.host, self.cfg.trace_port, self.cfg.trace_timeout_s)
+
         try:
-            ts.drain(0.3)
+            ts.drain(0.4)
 
             got: Dict[int, dict] = {}
-            deadline = time.time() + self.cfg.sweep_timeout_s + 2
+            deadline = time.time() + self.cfg.sweep_timeout_s + 3
 
             while time.time() < deadline:
                 j = ts.read_json(0.5)
                 if not j:
                     continue
 
-                pn = j.get("pointNum")
-                if pn is None:
+                try:
+                    pn = int(j.get("pointNum"))
+                    f = float(j.get("frequency"))
+                except Exception:
                     continue
 
-                pn = int(pn)
+                if not (start - 1e6 <= f <= stop + 1e6):
+                    continue
+
                 if pn == 0:
                     got = {}
 
@@ -164,23 +166,14 @@ class VnaBackend:
             if len(got) < pts:
                 raise RuntimeError(f"Trace stream incomplete ({len(got)}/{pts})")
 
-            best = None
-            best_df = None
+            center_index = pts // 2
+            center = got[center_index]
 
-            for j in got.values():
-                f = float(j["frequency"])
-                df = abs(f - f_hz)
-
-                if best_df is None or df < best_df:
-                    best_df = df
-                    best = j
-
-            picked_f = float(best["frequency"])
-
-            s11 = self._extract_complex(best, "S11")
-            s21 = self._extract_complex(best, "S21")
-            s12 = self._extract_complex(best, "S12")
-            s22 = self._extract_complex(best, "S22")
+            picked_f = float(center["frequency"])
+            s11 = self._extract_complex(center, "S11")
+            s21 = self._extract_complex(center, "S21")
+            s12 = self._extract_complex(center, "S12")
+            s22 = self._extract_complex(center, "S22")
 
             return picked_f, s11, s21, s12, s22
 

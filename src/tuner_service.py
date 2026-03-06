@@ -52,7 +52,7 @@ class TunerService:
                 host=tcp.get("host", "127.0.0.1"),
                 port=int(tcp.get("port", 12001)),
                 baud=0,
-                eol=_decode_eol(tcp.get("eol", "\n"), "\n"),
+                eol=_decode_eol(tcp.get("eol", "\\n"), "\\n"),
                 io_timeout_s=float(tcp.get("io_timeout_s", 0.25)),
                 query_timeout_s=float(tcp.get("query_timeout_s", 2.0)),
                 motion_ok_timeout_s=motion_ok_timeout_s,
@@ -66,7 +66,7 @@ class TunerService:
                 mode="serial",
                 com=ser.get("port", "COM6"),
                 baud=int(ser.get("baud", 115200)),
-                eol=_decode_eol(ser.get("eol", "\n"), "\n"),
+                eol=_decode_eol(ser.get("eol", "\\n"), "\\n"),
                 io_timeout_s=float(ser.get("io_timeout_s", 0.25)),
                 query_timeout_s=float(ser.get("query_timeout_s", 2.0)),
                 motion_ok_timeout_s=motion_ok_timeout_s,
@@ -87,7 +87,7 @@ class TunerService:
             ifbw_hz=float(m.get("ifbw_hz", 10_000.0)),
             avg=int(m.get("avg", 1)),
             span_hz=float(m.get("span_hz", 400_000.0)),
-            points=int(m.get("points", 2)),
+            points=int(m.get("points", 3)),
             sweep_timeout_s=float(m.get("sweep_timeout_s", 8.0)),
         ))
 
@@ -104,6 +104,8 @@ class TunerService:
             if not self.tuner.is_homed():
                 self.tuner.home_all()
         except Exception:
+            # Some firmware variants may not support STAT? reliably.
+            # In that case, skip auto-home here and let the move command fail normally.
             pass
 
     async def handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -115,7 +117,12 @@ class TunerService:
         async with self.lock:
             try:
                 if cmd == "idn":
-                    return {"ok": True, "tuner": self.tuner.idn(), "vna": self.vna.idn(), "tuner_name": self.tuner_name}
+                    return {
+                        "ok": True,
+                        "tuner": self.tuner.idn(),
+                        "vna": self.vna.idn(),
+                        "tuner_name": self.tuner_name,
+                    }
 
                 if cmd == "home":
                     axis = (req.get("axis") or "all").lower()
@@ -132,9 +139,7 @@ class TunerService:
                 if cmd == "setxy":
                     x = int(req["x_steps"])
                     y = int(req["y_steps"])
-
                     self._ensure_homed()
-
                     xf = self.tuner.goto_x(x)
                     yf = self.tuner.goto_y(y)
                     return {"ok": True, "x": xf, "y": yf}
@@ -218,7 +223,12 @@ class TunerService:
                         out_rows.append(CalRow(x=x, y=y, s11=s11, s21=s21, s12=s12, s22=s22))
 
                     path = self.store.save_freq(f_hz, out_rows)
-                    return {"ok": True, "cal_file": path, "states": len(out_rows), "tuner_name": self.tuner_name}
+                    return {
+                        "ok": True,
+                        "cal_file": path,
+                        "states": len(out_rows),
+                        "tuner_name": self.tuner_name,
+                    }
 
                 return {"ok": False, "error": f"unknown cmd '{cmd}'"}
 
@@ -227,21 +237,41 @@ class TunerService:
 
 
 async def client_task(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, svc: TunerService):
+    """Handle one TCP client connection.
+
+    Long operations such as calibration can outlive the client socket if the client times out,
+    the terminal is closed, or the request is interrupted. In that case, attempting to write the
+    response back to the client raises ConnectionResetError, ConnectionAbortedError, or
+    BrokenPipeError on Windows. That is a normal disconnect and should not spam the console.
+    """
     try:
         while True:
             line = await reader.readline()
             if not line:
                 break
+
             try:
                 req = jloads(line)
                 res = await svc.handle(req)
             except Exception as e:
                 res = {"ok": False, "error": str(e)}
-            writer.write(jdump(res))
-            await writer.drain()
+
+            try:
+                writer.write(jdump(res))
+                await writer.drain()
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                break
+            except Exception:
+                break
     finally:
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+        except Exception:
+            pass
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
 
 
 async def main():
