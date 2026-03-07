@@ -52,7 +52,7 @@ class TunerService:
                 host=tcp.get("host", "127.0.0.1"),
                 port=int(tcp.get("port", 12001)),
                 baud=0,
-                eol=_decode_eol(tcp.get("eol", "\\n"), "\\n"),
+                eol=_decode_eol(tcp.get("eol", "\n"), "\n"),
                 io_timeout_s=float(tcp.get("io_timeout_s", 0.25)),
                 query_timeout_s=float(tcp.get("query_timeout_s", 2.0)),
                 motion_ok_timeout_s=motion_ok_timeout_s,
@@ -66,7 +66,7 @@ class TunerService:
                 mode="serial",
                 com=ser.get("port", "COM6"),
                 baud=int(ser.get("baud", 115200)),
-                eol=_decode_eol(ser.get("eol", "\\n"), "\\n"),
+                eol=_decode_eol(ser.get("eol", "\n"), "\n"),
                 io_timeout_s=float(ser.get("io_timeout_s", 0.25)),
                 query_timeout_s=float(ser.get("query_timeout_s", 2.0)),
                 motion_ok_timeout_s=motion_ok_timeout_s,
@@ -97,6 +97,11 @@ class TunerService:
         self.default_top_n = int(lk.get("top_n", 30))
         self.default_alpha = float(lk.get("alpha", 0.02))
 
+        # Motion-bias defaults for faster tuning when X is slower than Y.
+        # Units are "gamma error per step". Start conservative.
+        self.default_x_move_weight = float(lk.get("x_move_weight", 0.0))
+        self.default_y_move_weight = float(lk.get("y_move_weight", 0.0))
+
         self.lock = asyncio.Lock()
 
     def _ensure_homed(self):
@@ -104,8 +109,6 @@ class TunerService:
             if not self.tuner.is_homed():
                 self.tuner.home_all()
         except Exception:
-            # Some firmware variants may not support STAT? reliably.
-            # In that case, skip auto-home here and let the move command fail normally.
             pass
 
     async def handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,12 +120,7 @@ class TunerService:
         async with self.lock:
             try:
                 if cmd == "idn":
-                    return {
-                        "ok": True,
-                        "tuner": self.tuner.idn(),
-                        "vna": self.vna.idn(),
-                        "tuner_name": self.tuner_name,
-                    }
+                    return {"ok": True, "tuner": self.tuner.idn(), "vna": self.vna.idn(), "tuner_name": self.tuner_name}
 
                 if cmd == "home":
                     axis = (req.get("axis") or "all").lower()
@@ -174,10 +172,27 @@ class TunerService:
                     top_n = int(req.get("top_n", self.default_top_n))
                     alpha = float(req.get("alpha", self.default_alpha))
 
-                    cal_file, rows = self.store.load_freq(f_hz)
-                    pick = pick_state(rows, gamma_target, select=select, top_n=top_n, alpha=alpha)
-
                     self._ensure_homed()
+
+                    current_x = self.tuner.pos_x()
+                    current_y = self.tuner.pos_y()
+
+                    x_move_weight = float(req.get("x_move_weight", self.default_x_move_weight))
+                    y_move_weight = float(req.get("y_move_weight", self.default_y_move_weight))
+
+                    cal_file, rows = self.store.load_freq(f_hz)
+                    pick = pick_state(
+                        rows,
+                        gamma_target,
+                        select=select,
+                        top_n=top_n,
+                        alpha=alpha,
+                        current_x=current_x,
+                        current_y=current_y,
+                        x_move_weight=x_move_weight,
+                        y_move_weight=y_move_weight,
+                    )
+
                     xf = self.tuner.goto_x(pick.x)
                     yf = self.tuner.goto_y(pick.y)
 
@@ -187,10 +202,14 @@ class TunerService:
                         "cal_file": cal_file,
                         "x_steps": int(xf),
                         "y_steps": int(yf),
+                        "current_x": int(current_x),
+                        "current_y": int(current_y),
                         "gamma_target": cplx_to_list(gamma_target),
                         "gamma": cplx_to_list(pick.gamma),
                         "err": float(pick.err),
                         "il_db": float(pick.il_db),
+                        "x_move_weight": float(x_move_weight),
+                        "y_move_weight": float(y_move_weight),
                     }
 
                 if cmd == "cal_add_freq":
@@ -223,12 +242,7 @@ class TunerService:
                         out_rows.append(CalRow(x=x, y=y, s11=s11, s21=s21, s12=s12, s22=s22))
 
                     path = self.store.save_freq(f_hz, out_rows)
-                    return {
-                        "ok": True,
-                        "cal_file": path,
-                        "states": len(out_rows),
-                        "tuner_name": self.tuner_name,
-                    }
+                    return {"ok": True, "cal_file": path, "states": len(out_rows), "tuner_name": self.tuner_name}
 
                 return {"ok": False, "error": f"unknown cmd '{cmd}'"}
 
@@ -237,13 +251,6 @@ class TunerService:
 
 
 async def client_task(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, svc: TunerService):
-    """Handle one TCP client connection.
-
-    Long operations such as calibration can outlive the client socket if the client times out,
-    the terminal is closed, or the request is interrupted. In that case, attempting to write the
-    response back to the client raises ConnectionResetError, ConnectionAbortedError, or
-    BrokenPipeError on Windows. That is a normal disconnect and should not spam the console.
-    """
     try:
         while True:
             line = await reader.readline()
