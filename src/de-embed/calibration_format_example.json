@@ -1,0 +1,32 @@
+{
+  "z0": 50.0,
+  "states": [
+    {
+      "x": 0,
+      "y": 0,
+      "points": [
+        {"freq_mhz": 400, "gamma_ri": [0.02, -0.03]},
+        {"freq_mhz": 433, "gamma_ri": [0.03, -0.04]},
+        {"freq_mhz": 450, "gamma_ri": [0.04, -0.05]}
+      ]
+    },
+    {
+      "x": 12000,
+      "y": 850,
+      "points": [
+        {"freq_mhz": 400, "gamma_ri": [0.48, -0.22]},
+        {"freq_mhz": 433, "gamma_ri": [0.51, -0.18]},
+        {"freq_mhz": 450, "gamma_ri": [0.55, -0.14]}
+      ]
+    },
+    {
+      "x": 14600,
+      "y": 1300,
+      "points": [
+        {"freq_mhz": 400, "gamma_ri": [0.62, 0.28]},
+        {"freq_mhz": 433, "gamma_ri": [0.66, 0.33]},
+        {"freq_mhz": 450, "gamma_ri": [0.70, 0.38]}
+      ]
+    }
+  ]
+}
